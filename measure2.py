@@ -62,7 +62,6 @@ ref_box = cv2.minAreaRect(ref_c)
 ref_box = cv2.boxPoints(ref_box) if not imutils.is_cv2() else cv2.cv.BoxPoints(ref_box)
 ref_box = np.array(ref_box, dtype="int")
 ref_box = perspective.order_points(ref_box)
-cv2.drawContours(orig, [ref_box.astype("int")], -1, (0, 0, 255), 2)
 
 # Calculate pixels per metric using the red square
 (tl, tr, br, bl) = ref_box
@@ -73,6 +72,15 @@ cv2.drawContours(orig, [ref_box.astype("int")], -1, (0, 0, 255), 2)
 
 dB = dist.euclidean((tlblX, tlblY), (trbrX, trbrY))
 pixelsPerMetric = dB / args["width"]  # Your known reference width
+
+# --- Draw reference box and label ---
+cv2.drawContours(orig, [ref_box.astype("int")], -1, (0, 0, 255), 2)
+
+cv2.putText(orig, "Reference object", (int(tl[0]), int(tl[1]) - 15),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2)
+cv2.putText(orig, "{:.1f}in".format(args["width"]),
+            (int(tr[0] + 10), int(tr[1])),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
 # --- Step 2: Measure all other objects ---
 objects = []
