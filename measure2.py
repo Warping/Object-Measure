@@ -8,14 +8,14 @@ import imutils
 import cv2
 
 def midpoint(ptA, ptB):
-	return ((ptA[0] + ptB[0]) * 0.5, (ptA[1] + ptB[1]) * 0.5)
+    return ((ptA[0] + ptB[0]) * 0.5, (ptA[1] + ptB[1]) * 0.5)
 
 # --- Arguments ---
 ap = argparse.ArgumentParser()
 ap.add_argument("-i", "--image", required=True,
-	help="path to the input image")
-ap.add_argument("-w", "--width", type=float, required=True,
-	help="width of the left-most object in the image (in inches)")
+    help="path to the input image")
+ap.add_argument("-w", "--width", type=float, default=1.0,
+    help="known width of the red reference object in inches (default 1 inch)")
 args = vars(ap.parse_args())
 
 # --- Load and preprocess image ---
@@ -27,117 +27,149 @@ edged = cv2.Canny(gray, 50, 100)
 edged = cv2.dilate(edged, None, iterations=1)
 edged = cv2.erode(edged, None, iterations=1)
 
-# --- Find contours ---
+# --- Find all external contours ---
 cnts = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 cnts = imutils.grab_contours(cnts)
-(cnts, _) = contours.sort_contours(cnts)
+cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
 
-pixelsPerMetric = None
 orig = image.copy()
 
-# --- Measure objects and store data ---
+# --- Step 1: Find red square as reference object ---
+# Convert to HSV for color filtering
+hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+
+# Define red color range (adjust if needed)
+lower_red1 = np.array([0, 70, 50])
+upper_red1 = np.array([10, 255, 255])
+lower_red2 = np.array([170, 70, 50])
+upper_red2 = np.array([180, 255, 255])
+
+mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+red_mask = cv2.bitwise_or(mask1, mask2)
+
+# Find contours in the red mask
+ref_cnts = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+ref_cnts = imutils.grab_contours(ref_cnts)
+
+if len(ref_cnts) == 0:
+    print("[ERROR] No red reference object found!")
+    exit()
+
+# Assume the largest red contour is the reference object
+ref_c = max(ref_cnts, key=cv2.contourArea)
+ref_box = cv2.minAreaRect(ref_c)
+ref_box = cv2.boxPoints(ref_box) if not imutils.is_cv2() else cv2.cv.BoxPoints(ref_box)
+ref_box = np.array(ref_box, dtype="int")
+ref_box = perspective.order_points(ref_box)
+cv2.drawContours(orig, [ref_box.astype("int")], -1, (0, 0, 255), 2)
+
+# Calculate pixels per metric using the red square
+(tl, tr, br, bl) = ref_box
+(tltrX, tltrY) = midpoint(tl, tr)
+(blbrX, blbrY) = midpoint(bl, br)
+(tlblX, tlblY) = midpoint(tl, bl)
+(trbrX, trbrY) = midpoint(tr, br)
+
+dB = dist.euclidean((tlblX, tlblY), (trbrX, trbrY))
+pixelsPerMetric = dB / args["width"]  # Your known reference width
+
+# --- Step 2: Measure all other objects ---
 objects = []
 
 for i, c in enumerate(cnts):
-	if cv2.contourArea(c) < 100:
-		continue
+    if cv2.contourArea(c) < 100:
+        continue
 
-	box = cv2.minAreaRect(c)
-	box = cv2.boxPoints(box) if not imutils.is_cv2() else cv2.cv.BoxPoints(box)
-	box = np.array(box, dtype="int")
-	box = perspective.order_points(box)
-	cv2.drawContours(orig, [box.astype("int")], -1, (0, 255, 0), 2)
+    # Skip the reference contour itself
+    if cv2.matchShapes(c, ref_c, 1, 0.0) < 0.01:
+        continue
 
-	(tl, tr, br, bl) = box
-	(tltrX, tltrY) = midpoint(tl, tr)
-	(blbrX, blbrY) = midpoint(bl, br)
-	(tlblX, tlblY) = midpoint(tl, bl)
-	(trbrX, trbrY) = midpoint(tr, br)
+    box = cv2.minAreaRect(c)
+    box = cv2.boxPoints(box) if not imutils.is_cv2() else cv2.cv.BoxPoints(box)
+    box = np.array(box, dtype="int")
+    box = perspective.order_points(box)
 
-	cv2.circle(orig, (int(tltrX), int(tltrY)), 5, (255, 0, 0), -1)
-	cv2.circle(orig, (int(blbrX), int(blbrY)), 5, (255, 0, 0), -1)
+    (tl, tr, br, bl) = box
+    (tltrX, tltrY) = midpoint(tl, tr)
+    (blbrX, blbrY) = midpoint(bl, br)
+    (tlblX, tlblY) = midpoint(tl, bl)
+    (trbrX, trbrY) = midpoint(tr, br)
 
-	dA = dist.euclidean((tltrX, tltrY), (blbrX, blbrY))
-	dB = dist.euclidean((tlblX, tlblY), (trbrX, trbrY))
+    dA = dist.euclidean((tltrX, tltrY), (blbrX, blbrY))
+    dB = dist.euclidean((tlblX, tlblY), (trbrX, trbrY))
 
-	if pixelsPerMetric is None:
-		pixelsPerMetric = dB / args["width"]
+    dimA = dA / pixelsPerMetric
+    dimB = dB / pixelsPerMetric
 
-	dimA = dA / pixelsPerMetric
-	dimB = dB / pixelsPerMetric
+    # --- Filter out small objects ---
+    if dimA < 0.5 and dimB < 0.5:
+        continue
 
-	objects.append({
-		"box": box,
-		"dimA": dimA,
-		"dimB": dimB,
-		"contour": c
-	})
+    cv2.drawContours(orig, [box.astype("int")], -1, (0, 255, 0), 2)
 
-# --- Washer detection: Find nested contours ---
-cnts2, hierarchy_data = cv2.findContours(edged.copy(), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
-hierarchy = hierarchy_data[0] if hierarchy_data is not None else []
+    objects.append({
+        "box": box,
+        "dimA": dimA,
+        "dimB": dimB,
+        "contour": c
+    })
 
 # --- Labeling ---
-screw_height_threshold = 1.5  # Inches
+for obj in objects:
+    box = obj["box"]
+    dimA = obj["dimA"]
+    dimB = obj["dimB"]
+    c = obj["contour"]
 
-for idx, obj in enumerate(objects):
+    label = "Hex nut"  # Default
 
-	box = obj["box"]
-	dimA = obj["dimA"]
-	dimB = obj["dimB"]
-	c = obj["contour"]
+    aspect_ratio = dimA / dimB if dimB != 0 else 0
 
-	label = "Hex nut"  # Default
+    if aspect_ratio > 1 or aspect_ratio < 0.5:
+        label = "Screw"
+    else:
+        perimeter = cv2.arcLength(c, True)
+        area = cv2.contourArea(c)
+        circularity = 4 * np.pi * (area / (perimeter * perimeter)) if perimeter > 0 else 0
 
-	# 1️⃣ First object is the reference object
-	if idx == 0:
-		label = "Reference object"
+        is_circular = circularity > 0.7
 
-	# 2️⃣ Screw: if height >= threshold
-	elif dimA >= screw_height_threshold:
-		label = "Screw"
+        has_hole = False
+        cnts2, hierarchy_data = cv2.findContours(edged.copy(), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+        hierarchy = hierarchy_data[0] if hierarchy_data is not None else []
 
-	else:
-		# --- Washer check ---
+        for h_idx, h in enumerate(hierarchy):
+            if h_idx < len(cnts2) and np.array_equal(c, cnts2[h_idx]):
+                if h[2] != -1:
+                    has_hole = True
+                break
 
-		# Circularity test
-		perimeter = cv2.arcLength(c, True)
-		area = cv2.contourArea(c)
-		if perimeter == 0:
-			circularity = 0
-		else:
-			circularity = 4 * np.pi * (area / (perimeter * perimeter))
+        if is_circular and has_hole:
+            label = "Washer"
 
-		is_circular = circularity > 0.7
+    (tl, tr, br, bl) = box
+    cv2.putText(orig, label, (int(tl[0]), int(tl[1]) - 15),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
 
-		# Hole check: does it have a child contour?
-		has_hole = False
+    cv2.putText(orig, "{:.1f}in".format(dimA),
+                (int(tl[0] - 15), int(tl[1] - 30)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    cv2.putText(orig, "{:.1f}in".format(dimB),
+                (int(tr[0] + 10), int(tr[1])),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-		for h_idx, h in enumerate(hierarchy):
-			# h[2] = first child index
-			# h[3] = parent index
-			if h_idx < len(cnts2) and np.array_equal(c, cnts2[h_idx]):
-				if h[2] != -1:
-					has_hole = True
-				break
+# --- Resize for display ---
+max_width = 1000
+height, width = orig.shape[:2]
 
-		if is_circular and has_hole:
-			label = "Washer"
+if width > max_width:
+    scale = max_width / width
+    resized = cv2.resize(orig, (int(width * scale), int(height * scale)))
+else:
+    resized = orig.copy()
 
-	# --- Draw the label ---
-	(tl, tr, br, bl) = box
-	cv2.putText(orig, label, (int(tl[0]), int(tl[1]) - 15),
-				cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
-
-	# --- Draw dimensions ---
-	cv2.putText(orig, "{:.1f}in".format(dimA),
-				(int(tl[0] - 15), int(tl[1] - 30)),
-				cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-	cv2.putText(orig, "{:.1f}in".format(dimB),
-				(int(tr[0] + 10), int(tr[1])),
-				cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-
-# --- Show the final labeled image ---
-cv2.imshow("Labeled Objects", orig)
+# --- Show final result ---
+cv2.imshow("Labeled Objects", resized)
 cv2.waitKey(0)
 cv2.destroyAllWindows()
