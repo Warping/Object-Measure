@@ -1,4 +1,4 @@
-# Measurement and object classification code
+# Measurement and object classification code (updated to ignore objects near reference)
 from scipy.spatial import distance as dist
 from imutils import perspective
 from imutils import contours
@@ -18,8 +18,20 @@ ap.add_argument("-w", "--width", type=float, default=1.0,
     help="known width of the red reference object in inches (default 1 inch)")
 args = vars(ap.parse_args())
 
-# --- Load and preprocess image ---
+# --- Load and resize image ---
 image = cv2.imread(args["image"])
+
+# --- Resize image if too large BEFORE anything else ---
+max_width = 1000
+height, width = image.shape[:2]
+
+if width > max_width:
+    scale = max_width / width
+    image = cv2.resize(image, (int(width * scale), int(height * scale)))
+
+
+
+# --- preprocess image ---
 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 gray = cv2.GaussianBlur(gray, (7, 7), 0)
 
@@ -32,13 +44,32 @@ cnts = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
 cnts = imutils.grab_contours(cnts)
 cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
 
+
+##This  a preview of contpours
+preview = image.copy()  # Copy of the original image to draw on
+cv2.drawContours(preview, cnts, -1, (0, 255, 0), 2)  # Draw all contours in green
+max_width = 1000
+height, width = preview.shape[:2]
+
+if width > max_width:
+    scale = max_width / width
+    resized = cv2.resize(preview, (int(width * scale), int(height * scale)))
+else:
+    resized = preview.copy()
+
+cv2.imshow("Contour Preview", resized)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
+##end
+
+
+
+
 orig = image.copy()
 
 # --- Step 1: Find red square as reference object ---
-# Convert to HSV for color filtering
 hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
-# Define red color range (adjust if needed)
 lower_red1 = np.array([0, 70, 50])
 upper_red1 = np.array([10, 255, 255])
 lower_red2 = np.array([170, 70, 50])
@@ -48,7 +79,6 @@ mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
 mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
 red_mask = cv2.bitwise_or(mask1, mask2)
 
-# Find contours in the red mask
 ref_cnts = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 ref_cnts = imutils.grab_contours(ref_cnts)
 
@@ -56,14 +86,13 @@ if len(ref_cnts) == 0:
     print("[ERROR] No red reference object found!")
     exit()
 
-# Assume the largest red contour is the reference object
 ref_c = max(ref_cnts, key=cv2.contourArea)
 ref_box = cv2.minAreaRect(ref_c)
 ref_box = cv2.boxPoints(ref_box) if not imutils.is_cv2() else cv2.cv.BoxPoints(ref_box)
 ref_box = np.array(ref_box, dtype="int")
 ref_box = perspective.order_points(ref_box)
 
-# Calculate pixels per metric using the red square
+# Calculate pixels per metric
 (tl, tr, br, bl) = ref_box
 (tltrX, tltrY) = midpoint(tl, tr)
 (blbrX, blbrY) = midpoint(bl, br)
@@ -71,18 +100,22 @@ ref_box = perspective.order_points(ref_box)
 (trbrX, trbrY) = midpoint(tr, br)
 
 dB = dist.euclidean((tlblX, tlblY), (trbrX, trbrY))
-pixelsPerMetric = dB / args["width"]  # Your known reference width
+pixelsPerMetric = dB / args["width"]
+
+# --- Reference box center ---
+ref_centerX = (tl[0] + br[0]) / 2
+ref_centerY = (tl[1] + br[1]) / 2
+ref_center = (ref_centerX, ref_centerY)
 
 # --- Draw reference box and label ---
 cv2.drawContours(orig, [ref_box.astype("int")], -1, (0, 0, 255), 2)
-
 cv2.putText(orig, "Reference object", (int(tl[0]), int(tl[1]) - 15),
             cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2)
 cv2.putText(orig, "{:.1f}in".format(args["width"]),
             (int(tr[0] + 10), int(tr[1])),
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
-# --- Step 2: Measure all other objects ---
+# --- Step 2: Measure and classify other objects ---
 objects = []
 
 for i, c in enumerate(cnts):
@@ -114,6 +147,19 @@ for i, c in enumerate(cnts):
     if dimA < 0.5 and dimB < 0.5:
         continue
 
+    # --- Calculate object's center ---
+    obj_centerX = (tl[0] + br[0]) / 2
+    obj_centerY = (tl[1] + br[1]) / 2
+    obj_center = (obj_centerX, obj_centerY)
+
+    # --- Distance to reference ---
+    distance_pixels = dist.euclidean(ref_center, obj_center)
+    distance_inches = distance_pixels / pixelsPerMetric
+
+    # --- Skip if too close to reference (false object) ---
+    if distance_inches < 0.5:
+        continue
+
     cv2.drawContours(orig, [box.astype("int")], -1, (0, 255, 0), 2)
 
     objects.append({
@@ -134,7 +180,7 @@ for obj in objects:
 
     aspect_ratio = dimA / dimB if dimB != 0 else 0
 
-    if aspect_ratio > 1 or aspect_ratio < 0.5:
+    if aspect_ratio > 1.1 or aspect_ratio < 0.5:
         label = "Screw"
     else:
         perimeter = cv2.arcLength(c, True)
@@ -167,17 +213,7 @@ for obj in objects:
                 (int(tr[0] + 10), int(tr[1])),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-# --- Resize for display ---
-max_width = 1000
-height, width = orig.shape[:2]
-
-if width > max_width:
-    scale = max_width / width
-    resized = cv2.resize(orig, (int(width * scale), int(height * scale)))
-else:
-    resized = orig.copy()
-
 # --- Show final result ---
-cv2.imshow("Labeled Objects", resized)
+cv2.imshow("Labeled Objects", orig)
 cv2.waitKey(0)
 cv2.destroyAllWindows()

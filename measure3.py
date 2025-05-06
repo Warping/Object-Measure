@@ -23,17 +23,36 @@ if not cap.isOpened():
     print("[ERROR] Could not open video.")
     exit()
 
+# --- Get total number of frames ---
+total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+print(f"[INFO] Total frames in video: {total_frames}")
+
+# --- Counters ---
+frames_with_washer = 0
+frames_with_screw = 0
+frames_with_hexnut = 0
+total_processed_frames = 0
+
 while True:
     ret, frame = cap.read()
     if not ret:
         break  # End of video
 
-    # --- Always rotate frame 90 degrees clockwise ---
+    total_processed_frames += 1
+
+    # --- Rotate frame ---
     image = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+
+    # --- Resize BEFORE processing ---
+    max_width = 1000
+    height, width = image.shape[:2]
+    if width > max_width:
+        scale = max_width / width
+        image = cv2.resize(image, (int(width * scale), int(height * scale)))
 
     orig = image.copy()
 
-    # --- Step 1: Detect Red Square Reference ---
+    # --- Step 1: Detect Red Reference ---
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
     lower_red1 = np.array([0, 70, 50])
@@ -49,8 +68,7 @@ while True:
     ref_cnts = imutils.grab_contours(ref_cnts)
 
     if len(ref_cnts) == 0:
-        print("[WARNING] No red reference found in frame. Skipping frame.")
-        continue
+        continue  # No reference found
 
     ref_c = max(ref_cnts, key=cv2.contourArea)
     ref_box = cv2.minAreaRect(ref_c)
@@ -65,17 +83,22 @@ while True:
     (trbrX, trbrY) = midpoint(tr, br)
 
     dB = dist.euclidean((tlblX, tlblY), (trbrX, trbrY))
-    pixelsPerMetric = dB / args["width"]  # User-given known width
+    pixelsPerMetric = dB / args["width"]
 
-    # --- Draw reference box and label ---
+    ref_centerX = (tl[0] + br[0]) / 2
+    ref_centerY = (tl[1] + br[1]) / 2
+    ref_center = (ref_centerX, ref_centerY)
+
     cv2.drawContours(orig, [ref_box.astype("int")], -1, (0, 0, 255), 2)
+
     cv2.putText(orig, "Reference object", (int(tl[0]), int(tl[1]) - 15),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2)
+
     cv2.putText(orig, "{:.1f}in".format(args["width"]),
                 (int(tr[0] + 10), int(tr[1])),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
-    # --- Step 2: Process other contours ---
+    # --- Step 2: Preprocess for contours ---
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (7, 7), 0)
 
@@ -87,13 +110,14 @@ while True:
     cnts = imutils.grab_contours(cnts)
     cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
 
-    objects = []
+    washer_objects = []
+    hexnut_objects = []
+    screw_objects = []
 
     for c in cnts:
         if cv2.contourArea(c) < 100:
             continue
 
-        # Skip the reference contour
         if cv2.matchShapes(c, ref_c, 1, 0.0) < 0.01:
             continue
 
@@ -114,77 +138,149 @@ while True:
         dimA = dA / pixelsPerMetric
         dimB = dB / pixelsPerMetric
 
-        # --- Filter out small objects ---
-        if dimA < 0.5 and dimB < 0.5:
+        if dimA < 0.1 or dimB < 0.1:
+            continue  # ignore tiny noise
+
+        obj_centerX = (tl[0] + br[0]) / 2
+        obj_centerY = (tl[1] + br[1]) / 2
+        obj_center = (obj_centerX, obj_centerY)
+
+        distance_pixels = dist.euclidean(ref_center, obj_center)
+        distance_inches = distance_pixels / pixelsPerMetric
+
+        if distance_inches < 0.5:
             continue
 
-        cv2.drawContours(orig, [box.astype("int")], -1, (0, 255, 0), 2)
+        object_area = dimA * dimB  # square inches
 
-        objects.append({
-            "box": box,
-            "dimA": dimA,
-            "dimB": dimB,
-            "contour": c
-        })
-
-    # --- Labeling ---
-    for obj in objects:
-        box = obj["box"]
-        dimA = obj["dimA"]
-        dimB = obj["dimB"]
-        c = obj["contour"]
-
-        label = "Hex nut"
-
-        aspect_ratio = dimA / dimB if dimB != 0 else 0
-
-        if aspect_ratio > 1 or aspect_ratio < 0.5:
-            label = "Screw"
+        if object_area < (0.5 * 0.5):
+            hexnut_objects.append({
+                "box": box,
+                "dimA": dimA,
+                "dimB": dimB
+            })
         else:
-            perimeter = cv2.arcLength(c, True)
-            area = cv2.contourArea(c)
-            circularity = 4 * np.pi * (area / (perimeter * perimeter)) if perimeter > 0 else 0
+            aspect_ratio = dimA / dimB if dimB != 0 else 0
+            if aspect_ratio > 1.1 or aspect_ratio < 0.5:
+                screw_objects.append({
+                    "box": box,
+                    "dimA": dimA,
+                    "dimB": dimB
+                })
+            else:
+                washer_objects.append({
+                    "box": box,
+                    "dimA": dimA,
+                    "dimB": dimB
+                })
 
-            is_circular = circularity > 0.7
+    # --- Check for hex nut overlaps with washers ---
+    valid_hexnuts = []
 
-            has_hole = False
-            cnts2, hierarchy_data = cv2.findContours(edged.copy(), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
-            hierarchy = hierarchy_data[0] if hierarchy_data is not None else []
+    for hex_obj in hexnut_objects:
+        hx_min_x = int(min(hex_obj["box"][:,0]))
+        hx_max_x = int(max(hex_obj["box"][:,0]))
+        hx_min_y = int(min(hex_obj["box"][:,1]))
+        hx_max_y = int(max(hex_obj["box"][:,1]))
 
-            for h_idx, h in enumerate(hierarchy):
-                if h_idx < len(cnts2) and np.array_equal(c, cnts2[h_idx]):
-                    if h[2] != -1:
-                        has_hole = True
-                    break
+        overlap = False
 
-            if is_circular and has_hole:
-                label = "Washer"
+        for wash_obj in washer_objects:
+            wx_min_x = int(min(wash_obj["box"][:,0]))
+            wx_max_x = int(max(wash_obj["box"][:,0]))
+            wx_min_y = int(min(wash_obj["box"][:,1]))
+            wx_max_y = int(max(wash_obj["box"][:,1]))
 
-        (tl, tr, br, bl) = box
-        cv2.putText(orig, label, (int(tl[0]), int(tl[1]) - 15),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
+            if (hx_min_x < wx_max_x and hx_max_x > wx_min_x and
+                hx_min_y < wx_max_y and hx_max_y > wx_min_y):
+                overlap = True
+                break
 
-        cv2.putText(orig, "{:.1f}in".format(dimA),
-                    (int(tl[0] - 15), int(tl[1] - 30)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        cv2.putText(orig, "{:.1f}in".format(dimB),
-                    (int(tr[0] + 10), int(tr[1])),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        if not overlap:
+            valid_hexnuts.append(hex_obj)
 
-    # --- Resize frame for display ---
-    max_width = 900
-    height, width = orig.shape[:2]
-    if width > max_width:
-        scale = max_width / width
-        resized = cv2.resize(orig, (int(width * scale), int(height * scale)))
-    else:
-        resized = orig.copy()
+    # --- Draw and count ---
 
-    cv2.imshow("Measured Video", resized)
+    if washer_objects:
+        frames_with_washer += 1
+        for obj in washer_objects:
+            (tl, tr, br, bl) = obj["box"]
+            dimA = obj["dimA"]
+            dimB = obj["dimB"]
+
+            cv2.drawContours(orig, [obj["box"].astype("int")], -1, (0, 255, 0), 2)
+            cv2.putText(orig, "Washer", (int(tl[0]), int(tl[1]) - 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
+
+            cv2.putText(orig, "{:.1f}in".format(dimA),
+                        (int(tl[0] - 15), int(tl[1] - 30)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            cv2.putText(orig, "{:.1f}in".format(dimB),
+                        (int(tr[0] + 10), int(tr[1])),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+    if valid_hexnuts:
+        frames_with_hexnut += 1
+        for obj in valid_hexnuts:
+            (tl, tr, br, bl) = obj["box"]
+            dimA = obj["dimA"]
+            dimB = obj["dimB"]
+
+            cv2.drawContours(orig, [obj["box"].astype("int")], -1, (255, 255, 0), 2)
+            cv2.putText(orig, "Hex nut", (int(tl[0]), int(tl[1]) - 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2)
+
+            cv2.putText(orig, "{:.1f}in".format(dimA),
+                        (int(tl[0] - 15), int(tl[1] - 30)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            cv2.putText(orig, "{:.1f}in".format(dimB),
+                        (int(tr[0] + 10), int(tr[1])),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+    if screw_objects:
+        frames_with_screw += 1
+        for obj in screw_objects:
+            (tl, tr, br, bl) = obj["box"]
+            dimA = obj["dimA"]
+            dimB = obj["dimB"]
+
+            cv2.drawContours(orig, [obj["box"].astype("int")], -1, (0, 0, 255), 2)
+            cv2.putText(orig, "Screw", (int(tl[0]), int(tl[1]) - 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2)
+
+            cv2.putText(orig, "{:.1f}in".format(dimA),
+                        (int(tl[0] - 15), int(tl[1] - 30)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            cv2.putText(orig, "{:.1f}in".format(dimB),
+                        (int(tr[0] + 10), int(tr[1])),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+    # --- Show the result ---
+    cv2.imshow("Measured Video", orig)
 
     key = cv2.waitKey(1) & 0xFF
     if key == ord('q'):
         break
+    elif key == ord('p'):
+        while True:
+            key2 = cv2.waitKey(0) & 0xFF
+            if key2 == ord('p'):
+                break
+            elif key2 == ord('q'):
+                cap.release()
+                cv2.destroyAllWindows()
+                exit()
 
 cap.release()
 cv2.destroyAllWindows()
+
+# --- Final results ---
+print("\n[RESULTS]")
+if total_processed_frames > 0:
+    print(f"Total frames processed: {total_processed_frames}")
+    print(f"Frames with Washer: {frames_with_washer} ({100 * frames_with_washer / total_processed_frames:.2f}%)")
+    print(f"Frames with Screw: {frames_with_screw} ({100 * frames_with_screw / total_processed_frames:.2f}%)")
+    print(f"Frames with Hex nut (no overlap with washers): {frames_with_hexnut} ({100 * frames_with_hexnut / total_processed_frames:.2f}%)")
+else:
+    print("No frames were processed.")
+

@@ -3,7 +3,7 @@ import numpy as np
 import os
 
 # ----------- PARAMETERS -----------
-video_path = "First.mp4"   # Replace with your video file
+video_path = "Singlewasher.mp4"   # Replace with your video file
 output_folder = "images/"  # Folder to save frames
 
 # ----------- CREATE OUTPUT FOLDER IF NEEDED -----------
