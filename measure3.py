@@ -143,9 +143,8 @@ while True:
 
         obj_centerX = (tl[0] + br[0]) / 2
         obj_centerY = (tl[1] + br[1]) / 2
-        obj_center = (obj_centerX, obj_centerY)
 
-        distance_pixels = dist.euclidean(ref_center, obj_center)
+        distance_pixels = dist.euclidean(ref_center, (obj_centerX, obj_centerY))
         distance_inches = distance_pixels / pixelsPerMetric
 
         if distance_inches < 0.5:
@@ -174,27 +173,41 @@ while True:
                     "dimB": dimB
                 })
 
-    # --- Check for hex nut overlaps with washers ---
+    # --- Check for hex nut overlaps with washers or screws ---
     valid_hexnuts = []
 
     for hex_obj in hexnut_objects:
-        hx_min_x = int(min(hex_obj["box"][:,0]))
-        hx_max_x = int(max(hex_obj["box"][:,0]))
-        hx_min_y = int(min(hex_obj["box"][:,1]))
-        hx_max_y = int(max(hex_obj["box"][:,1]))
+        hx_min_x = int(min(hex_obj["box"][:, 0]))
+        hx_max_x = int(max(hex_obj["box"][:, 0]))
+        hx_min_y = int(min(hex_obj["box"][:, 1]))
+        hx_max_y = int(max(hex_obj["box"][:, 1]))
 
         overlap = False
 
+        # Check overlap with washers
         for wash_obj in washer_objects:
-            wx_min_x = int(min(wash_obj["box"][:,0]))
-            wx_max_x = int(max(wash_obj["box"][:,0]))
-            wx_min_y = int(min(wash_obj["box"][:,1]))
-            wx_max_y = int(max(wash_obj["box"][:,1]))
+            wx_min_x = int(min(wash_obj["box"][:, 0]))
+            wx_max_x = int(max(wash_obj["box"][:, 0]))
+            wx_min_y = int(min(wash_obj["box"][:, 1]))
+            wx_max_y = int(max(wash_obj["box"][:, 1]))
 
             if (hx_min_x < wx_max_x and hx_max_x > wx_min_x and
                 hx_min_y < wx_max_y and hx_max_y > wx_min_y):
                 overlap = True
                 break
+
+        # If no washer overlap, check overlap with screws
+        if not overlap:
+            for scr_obj in screw_objects:
+                sx_min_x = int(min(scr_obj["box"][:, 0]))
+                sx_max_x = int(max(scr_obj["box"][:, 0]))
+                sx_min_y = int(min(scr_obj["box"][:, 1]))
+                sx_max_y = int(max(scr_obj["box"][:, 1]))
+
+                if (hx_min_x < sx_max_x and hx_max_x > sx_min_x and
+                    hx_min_y < sx_max_y and hx_max_y > sx_min_y):
+                    overlap = True
+                    break
 
         if not overlap:
             valid_hexnuts.append(hex_obj)
@@ -211,7 +224,6 @@ while True:
             cv2.drawContours(orig, [obj["box"].astype("int")], -1, (0, 255, 0), 2)
             cv2.putText(orig, "Washer", (int(tl[0]), int(tl[1]) - 15),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
-
             cv2.putText(orig, "{:.1f}in".format(dimA),
                         (int(tl[0] - 15), int(tl[1] - 30)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
@@ -229,7 +241,6 @@ while True:
             cv2.drawContours(orig, [obj["box"].astype("int")], -1, (255, 255, 0), 2)
             cv2.putText(orig, "Hex nut", (int(tl[0]), int(tl[1]) - 15),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2)
-
             cv2.putText(orig, "{:.1f}in".format(dimA),
                         (int(tl[0] - 15), int(tl[1] - 30)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
@@ -247,7 +258,6 @@ while True:
             cv2.drawContours(orig, [obj["box"].astype("int")], -1, (0, 0, 255), 2)
             cv2.putText(orig, "Screw", (int(tl[0]), int(tl[1]) - 15),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2)
-
             cv2.putText(orig, "{:.1f}in".format(dimA),
                         (int(tl[0] - 15), int(tl[1] - 30)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
@@ -280,7 +290,6 @@ if total_processed_frames > 0:
     print(f"Total frames processed: {total_processed_frames}")
     print(f"Frames with Washer: {frames_with_washer} ({100 * frames_with_washer / total_processed_frames:.2f}%)")
     print(f"Frames with Screw: {frames_with_screw} ({100 * frames_with_screw / total_processed_frames:.2f}%)")
-    print(f"Frames with Hex nut (no overlap with washers): {frames_with_hexnut} ({100 * frames_with_hexnut / total_processed_frames:.2f}%)")
+    print(f"Frames with Hex nut: {frames_with_hexnut} ({100 * frames_with_hexnut / total_processed_frames:.2f}%)")
 else:
     print("No frames were processed.")
-
