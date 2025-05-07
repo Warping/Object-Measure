@@ -21,7 +21,7 @@ def calc_error(measured, known):
         return (0, 0)
     errA = 100 * abs(measured[0] - known[0]) / known[0]
     errB = 100 * abs(measured[1] - known[1]) / known[1]
-    return (errA, errB)
+    return (float(errA), float(errB))
 
 # --- Arguments ---
 ap = argparse.ArgumentParser()
@@ -31,9 +31,8 @@ ap.add_argument("-w", "--width", type=float, default=1.0,
     help="known width of the red reference object in inches (default 1 inch)")
 args = vars(ap.parse_args())
 
-# --- Video capture ---
-cap = cv2.VideoCapture(args["video"])
 
+cap = cv2.VideoCapture(args["video"])
 if not cap.isOpened():
     print("[ERROR] Could not open video.")
     exit()
@@ -41,13 +40,13 @@ if not cap.isOpened():
 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 print(f"[INFO] Total frames in video: {total_frames}")
 
-# --- Counters ---
+# Frame counters
 frames_with_washer = 0
 frames_with_screw = 0
 frames_with_hexnut = 0
 total_processed_frames = 0
 
-# --- Store dimensions per frame ---
+# Collect dimensions for analysis
 washer_dims = []
 screw_dims = []
 hexnut_dims = []
@@ -58,10 +57,9 @@ while True:
         break
 
     total_processed_frames += 1
-
     image = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
 
-    max_width = 1000
+    max_width = 700
     height, width = image.shape[:2]
     if width > max_width:
         scale = max_width / width
@@ -69,7 +67,7 @@ while True:
 
     orig = image.copy()
 
-    # --- Detect Red Reference ---
+    # --- Step 1: Detect Red Reference ---
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
     lower_red1 = np.array([0, 70, 50])
@@ -83,13 +81,12 @@ while True:
 
     ref_cnts = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     ref_cnts = imutils.grab_contours(ref_cnts)
-
     if len(ref_cnts) == 0:
         continue
 
     ref_c = max(ref_cnts, key=cv2.contourArea)
     ref_box = cv2.minAreaRect(ref_c)
-    ref_box = cv2.boxPoints(ref_box) if not imutils.is_cv2() else cv2.cv.BoxPoints(ref_box)
+    ref_box = cv2.boxPoints(ref_box)
     ref_box = np.array(ref_box, dtype="int")
     ref_box = perspective.order_points(ref_box)
 
@@ -110,11 +107,10 @@ while True:
     cv2.putText(orig, "{:.1f}in".format(args["width"]),
                 (int(tr[0] + 10), int(tr[1])),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+       
 
-    # --- Preprocess for contours ---
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (7, 7), 0)
-
     edged = cv2.Canny(gray, 50, 100)
     edged = cv2.dilate(edged, None, iterations=1)
     edged = cv2.erode(edged, None, iterations=1)
@@ -130,12 +126,11 @@ while True:
     for c in cnts:
         if cv2.contourArea(c) < 100:
             continue
-
         if cv2.matchShapes(c, ref_c, 1, 0.0) < 0.01:
             continue
 
         box = cv2.minAreaRect(c)
-        box = cv2.boxPoints(box) if not imutils.is_cv2() else cv2.cv.BoxPoints(box)
+        box = cv2.boxPoints(box)
         box = np.array(box, dtype="int")
         box = perspective.order_points(box)
 
@@ -154,12 +149,10 @@ while True:
         if dimA < 0.1 or dimB < 0.1:
             continue
 
+        area = dimA * dimB
         distance_inches = dist.euclidean(ref_center, ((tl[0] + br[0]) / 2, (tl[1] + br[1]) / 2)) / pixelsPerMetric
-
         if distance_inches < 0.5:
             continue
-
-        area = dimA * dimB
 
         if area < (0.5 * 0.5):
             hexnut_objects.append({"box": box, "dimA": dimA, "dimB": dimB})
@@ -170,20 +163,17 @@ while True:
             else:
                 washer_objects.append({"box": box, "dimA": dimA, "dimB": dimB})
 
-    # --- Filter hex nuts overlapping washers or screws ---
+    # --- Filter out hex nuts overlapping washers or screws ---
     valid_hexnuts = []
-
     for hex_obj in hexnut_objects:
         hx_min = np.min(hex_obj["box"], axis=0)
         hx_max = np.max(hex_obj["box"], axis=0)
-
         overlap = False
 
         for obj_list in [washer_objects, screw_objects]:
             for other in obj_list:
                 ox_min = np.min(other["box"], axis=0)
                 ox_max = np.max(other["box"], axis=0)
-
                 if (hx_min[0] < ox_max[0] and hx_max[0] > ox_min[0] and
                     hx_min[1] < ox_max[1] and hx_max[1] > ox_min[1]):
                     overlap = True
@@ -194,39 +184,62 @@ while True:
         if not overlap:
             valid_hexnuts.append(hex_obj)
 
-    # --- Draw objects and store dimensions ---
+    # --- Washers ---
     if washer_objects:
         frames_with_washer += 1
         for obj in washer_objects:
             (tl, tr, br, bl) = obj["box"]
-            dimA, dimB = obj["dimA"], obj["dimB"]
+            dimA = obj["dimA"]
+            dimB = obj["dimB"]
             washer_dims.append((dimA, dimB))
             cv2.drawContours(orig, [obj["box"].astype("int")], -1, (0, 255, 0), 2)
             cv2.putText(orig, "Washer", (int(tl[0]), int(tl[1]) - 15),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
-            
+            # Display dimensions
+            cv2.putText(orig, "{:.1f}in".format(dimA),
+                        (int(tl[0] - 15), int(tl[1] - 30)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            cv2.putText(orig, "{:.1f}in".format(dimB),
+                        (int(tr[0] + 10), int(tr[1])),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+    # --- Screws ---
     if screw_objects:
         frames_with_screw += 1
         for obj in screw_objects:
             (tl, tr, br, bl) = obj["box"]
-            dimA, dimB = obj["dimA"], obj["dimB"]
+            dimA = obj["dimA"]
+            dimB = obj["dimB"]
             screw_dims.append((dimA, dimB))
             cv2.drawContours(orig, [obj["box"].astype("int")], -1, (0, 0, 255), 2)
             cv2.putText(orig, "Screw", (int(tl[0]), int(tl[1]) - 15),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2)
+            cv2.putText(orig, "{:.1f}in".format(dimA),
+                        (int(tl[0] - 15), int(tl[1] - 30)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            cv2.putText(orig, "{:.1f}in".format(dimB),
+                        (int(tr[0] + 10), int(tr[1])),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
+    # --- Hex nuts ---
     if valid_hexnuts:
         frames_with_hexnut += 1
         for obj in valid_hexnuts:
             (tl, tr, br, bl) = obj["box"]
-            dimA, dimB = obj["dimA"], obj["dimB"]
+            dimA = obj["dimA"]
+            dimB = obj["dimB"]
             hexnut_dims.append((dimA, dimB))
             cv2.drawContours(orig, [obj["box"].astype("int")], -1, (255, 255, 0), 2)
             cv2.putText(orig, "Hex nut", (int(tl[0]), int(tl[1]) - 15),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2)
+            cv2.putText(orig, "{:.1f}in".format(dimA),
+                        (int(tl[0] - 15), int(tl[1] - 30)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            cv2.putText(orig, "{:.1f}in".format(dimB),
+                        (int(tr[0] + 10), int(tr[1])),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
     cv2.imshow("Measured Video", orig)
-
     key = cv2.waitKey(1) & 0xFF
     if key == ord('q'):
         break
@@ -271,8 +284,8 @@ print(f"Frames with Screw: {frames_with_screw} ({100 * frames_with_screw / total
 print(f"Frames with Hex nut: {frames_with_hexnut} ({100 * frames_with_hexnut / total_processed_frames:.2f}%)")
 
 print("\n--- Measurement Accuracy ---")
-print(f"Washer avg dims: {washer_avg} | Known: {washer_known} | Error %: {washer_error}")
-print(f"Screw avg dims: {screw_avg} | Known: {screw_known} | Error %: {screw_error}")
-print(f"Hex nut avg dims: {hexnut_avg} | Known: {hexnut_known} | Error %: {hexnut_error}")
+print(f"Washer avg dims: ({washer_avg[0]:.2f}, {washer_avg[1]:.2f}) | Known: {washer_known} | Error %: ({washer_error[0]:.2f}%, {washer_error[1]:.2f}%)")
+print(f"Screw avg dims: ({screw_avg[0]:.2f}, {screw_avg[1]:.2f}) | Known: {screw_known} | Error %: ({screw_error[0]:.2f}%, {screw_error[1]:.2f}%)")
+print(f"Hex nut avg dims: ({hexnut_avg[0]:.2f}, {hexnut_avg[1]:.2f}) | Known: {hexnut_known} | Error %: ({hexnut_error[0]:.2f}%, {hexnut_error[1]:.2f}%)")
 
-           
+
