@@ -284,8 +284,21 @@ print(f"Frames with Screw: {frames_with_screw} ({100 * frames_with_screw / total
 print(f"Frames with Hex nut: {frames_with_hexnut} ({100 * frames_with_hexnut / total_processed_frames:.2f}%)")
 
 print("\n--- Measurement Accuracy ---")
-print(f"Washer avg dims: ({washer_avg[0]:.2f}, {washer_avg[1]:.2f}) | Known: {washer_known} | Error %: ({washer_error[0]:.2f}%, {washer_error[1]:.2f}%)")
-print(f"Screw avg dims: ({screw_avg[0]:.2f}, {screw_avg[1]:.2f}) | Known: {screw_known} | Error %: ({screw_error[0]:.2f}%, {screw_error[1]:.2f}%)")
-print(f"Hex nut avg dims: ({hexnut_avg[0]:.2f}, {hexnut_avg[1]:.2f}) | Known: {hexnut_known} | Error %: ({hexnut_error[0]:.2f}%, {hexnut_error[1]:.2f}%)")
 
+min_percentage = 80  # Minimum percent of frames required
+
+if 100 * frames_with_washer / total_processed_frames >= min_percentage:
+    print(f"Washer avg dims: ({washer_avg[0]:.2f}, {washer_avg[1]:.2f}) | Known: {washer_known} | Error %: ({washer_error[0]:.2f}%, {washer_error[1]:.2f}%)")
+else:
+    print("Washer not detected. Skipping accuracy report.")
+
+if 100 * frames_with_screw / total_processed_frames >= min_percentage:
+    print(f"Screw avg dims: ({screw_avg[0]:.2f}, {screw_avg[1]:.2f}) | Known: {screw_known} | Error %: ({screw_error[0]:.2f}%, {screw_error[1]:.2f}%)")
+else:
+    print("Screw not detected. Skipping accuracy report.")
+
+if 100 * frames_with_hexnut / total_processed_frames >= min_percentage:
+    print(f"Hex nut avg dims: ({hexnut_avg[0]:.2f}, {hexnut_avg[1]:.2f}) | Known: {hexnut_known} | Error %: ({hexnut_error[0]:.2f}%, {hexnut_error[1]:.2f}%)")
+else:
+    print("Hex nut not detected. Skipping accuracy report.")
 
