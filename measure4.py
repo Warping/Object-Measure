@@ -277,7 +277,7 @@ hexnut_avg = np.mean(hexnut_dims, axis=0) if len(hexnut_dims) > 0 else (0, 0)
 
 # --- Known true dimensions ---
 washer_known = (0.7, 0.7)
-screw_known = (0.2, 3.0)
+screw_known = (0.2, 2.9)
 hexnut_known = (0.4, 0.4)
 
 # --- Calculate errors ---
