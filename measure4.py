@@ -252,6 +252,15 @@ while True:
                 cap.release()
                 cv2.destroyAllWindows()
                 exit()
+            elif key2 == ord('s'):
+                filename = f"saved_frame_{total_processed_frames}.png"
+                cv2.imwrite(filename, orig)
+                print(f"[INFO] Saved paused frame as {filename}")
+
+    elif key == ord('s'):
+        filename = f"saved_frame_{total_processed_frames}.png"
+        cv2.imwrite(filename, orig)
+        print(f"[INFO] Saved current frame as {filename}")
 
 cap.release()
 cv2.destroyAllWindows()
