@@ -20,13 +20,18 @@ Using a known reference object (a red object of known width), the script calcula
 - Supports interactive pausing (`p` key) and quitting (`q` key) while processing the video.
 
 ## 🔧 Requirements
-
-Python 3.x and the following libraries:
-- `opencv-python`
-- `imutils`
-- `numpy`
-- `scipy`
-
-You can install them using:
-```bash
-pip install opencv-python imutils numpy scipy
+    We recommend using Python 3.12 or later for this script.
+    
+    Create a virtual environment and install the required packages:
+        
+        python -m venv .venv
+        .venv\Scripts\activate
+        pip install -r requirements.txt
+    
+    Usage:
+    
+        python measure.py --video <path_to_video> --width <known_width>
+        
+    Example:
+    
+        python measure.py --video OneofEach.mp4 --width 1.0
